@@ -235,8 +235,8 @@ function loadPosts() {
 }
 
 // ---------- 화면 모양 ----------
-const CSS = `
-:root{--bg:#fbfaf7;--card:#fff;--line:#e6e3dc;--text:#22211f;--muted:#6f6c66;--accent:#1e5aa8;--accent-soft:#e8f0fb}
+// 디자인은 style.css 파일에 있습니다. (없으면 아래 기본 디자인을 씁니다)
+const DEFAULT_CSS = `:root{--bg:#fbfaf7;--card:#fff;--line:#e6e3dc;--text:#22211f;--muted:#6f6c66;--accent:#1e5aa8;--accent-soft:#e8f0fb}
 @media (prefers-color-scheme:dark){:root{--bg:#161615;--card:#1f1f1d;--line:#34332f;--text:#ecebe6;--muted:#a3a19a;--accent:#7fb0f0;--accent-soft:#1d2a3b}}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--text);font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;font-size:19px;line-height:1.75;word-break:keep-all;overflow-wrap:anywhere}
@@ -267,15 +267,19 @@ article code{font-size:.9em}
 .source{margin-top:22px;padding:14px 16px;border:1px solid var(--line);border-radius:10px;font-size:16px}
 .back{display:inline-block;margin:0 0 16px;text-decoration:none}
 footer{color:var(--muted);font-size:14px;text-align:center;padding:0 18px 40px}
-.empty{background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:30px;text-align:center;color:var(--muted)}
-`;
+.empty{background:var(--card);border:1px dashed var(--line);border-radius:14px;padding:30px;text-align:center;color:var(--muted)}`;
+const STYLE_FILE = path.join(ROOT, "style.css");
+const IMAGES_DIR = path.join(ROOT, "images");
+function loadCss() {
+  return fs.existsSync(STYLE_FILE) ? fs.readFileSync(STYLE_FILE, "utf8") : DEFAULT_CSS;
+}
 
 function page({ title, settings, body, depth = 0 }) {
-  const home = depth ? "../" : "./";
+  const home = depth ? "../index.html" : "index.html"; // 내 PC에서 열어 봐도 목록으로 잘 돌아가게
   return `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title><meta name="description" content="${esc(settings.intro)}">
-<link rel="stylesheet" href="${home}style.css"></head>
+<link rel="stylesheet" href="${depth ? "../" : ""}style.css"></head>
 <body><header class="site"><div class="wrap"><h1><a href="${home}">${esc(settings.blog_title)}</a></h1>${settings.intro ? `<p>${esc(settings.intro)}</p>` : ""}</div></header>
 <main><div class="wrap">${body}</div></main>
 <footer>${settings.author ? esc(settings.author) + " · " : ""}옵시디언에서 쓰고, 깃허브에 올리면, 버셀이 띄웁니다</footer>
@@ -291,7 +295,8 @@ function build() {
   const posts = loadPosts();
   fs.rmSync(OUT_DIR, { recursive: true, force: true });
   fs.mkdirSync(path.join(OUT_DIR, "post"), { recursive: true });
-  fs.writeFileSync(path.join(OUT_DIR, "style.css"), CSS.trim());
+  fs.writeFileSync(path.join(OUT_DIR, "style.css"), loadCss());
+  if (fs.existsSync(IMAGES_DIR)) fs.cpSync(IMAGES_DIR, path.join(OUT_DIR, "images"), { recursive: true });
 
   const list = posts.length
     ? `<p class="count">글 ${posts.length}편 · 최신 글이 맨 위</p>` +
@@ -302,16 +307,57 @@ function build() {
   fs.writeFileSync(path.join(OUT_DIR, "index.html"), page({ title: settings.blog_title, settings, body: list }));
 
   for (const p of posts) {
-    const body = `<a class="back" href="../">← 글 목록</a><article>
+    const body = `<a class="back" href="../index.html">← 글 목록</a><article>
 <h1>${esc(p.title)}</h1>
 <div class="meta">${p.date.label ? `<span>${p.date.label}</span>` : ""}${tagsHtml(p.tags)}</div>
 ${p.html}
 ${p.source ? `<div class="source">출처 · <a href="${esc(safeUrl(p.source))}" target="_blank" rel="noopener">${esc(p.source)}</a></div>` : ""}
 </article>`;
-    fs.writeFileSync(path.join(OUT_DIR, "post", `${p.slug}.html`), page({ title: `${p.title} · ${settings.blog_title}`, settings, body, depth: 1 }));
+    // 글 안의 내 그림(images/…)은 한 단계 위를 보게
+    const fixed = body.replace(/src="(?!https?:|data:|\/)(?:\.\/)?/g, 'src="../');
+    fs.writeFileSync(path.join(OUT_DIR, "post", `${p.slug}.html`), page({ title: `${p.title} · ${settings.blog_title}`, settings, body: fixed, depth: 1 }));
   }
-  console.log(`블로그 완성: 글 ${posts.length}편 → public 폴더`);
+  console.log(`블로그 완성: 글 ${posts.length}편 → public 폴더 (미리보기: public/index.html 더블클릭)`);
   posts.forEach((p, i) => console.log(`  ${i + 1}. [${p.date.label || "날짜 없음"}] ${p.title}`));
+  return { settings, posts };
 }
 
-build();
+// ---------- 한 파일짜리 HTML (node build.js --single) ----------
+// 파일 하나만 있으면 어디서든 열리는 블로그. 디자인은 파일 안에, 내 그림은 base64로 파일 안에 넣음.
+const MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml" };
+function embedImages(html) {
+  return html.replace(/src="(?!https?:|data:)(?:\.\/)?([^"]+)"/g, (m, rel) => {
+    const f = path.join(ROOT, decodeURIComponent(rel));
+    const mime = MIME[path.extname(f).toLowerCase()];
+    if (!mime || !fs.existsSync(f)) return m;
+    return `src="data:${mime};base64,${fs.readFileSync(f).toString("base64")}"`;
+  });
+}
+function buildSingle({ settings, posts }) {
+  const list = posts.length
+    ? `<p class="count">글 ${posts.length}편 · 최신 글이 맨 위</p>` +
+      posts.map((p, i) => `<a class="card" href="#${p.slug}">
+<div class="meta">${i === 0 ? '<span class="new">최신</span>' : ""}${p.date.label ? `<span>${p.date.label}</span>` : "<span>날짜 없음</span>"}${tagsHtml(p.tags)}</div>
+<h2>${esc(p.title)}</h2><p>${esc(p.summary)}</p></a>`).join("\n")
+    : `<div class="empty">아직 글이 없습니다.</div>`;
+  const articles = posts.map((p) => `<article id="${p.slug}" style="margin-top:28px">
+<h1>${esc(p.title)}</h1>
+<div class="meta">${p.date.label ? `<span>${p.date.label}</span>` : ""}${tagsHtml(p.tags)}</div>
+${p.html}
+${p.source ? `<div class="source">출처 · <a href="${esc(safeUrl(p.source))}" target="_blank" rel="noopener">${esc(p.source)}</a></div>` : ""}
+<p style="margin-top:18px"><a href="#top">↑ 글 목록으로</a></p>
+</article>`).join("\n");
+  const html = `<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(settings.blog_title)}</title><style>${loadCss()}</style></head>
+<body id="top"><header class="site"><div class="wrap"><h1>${esc(settings.blog_title)}</h1>${settings.intro ? `<p>${esc(settings.intro)}</p>` : ""}</div></header>
+<main><div class="wrap">${list}${articles}</div></main>
+<footer>${settings.author ? esc(settings.author) + " · " : ""}한 파일로 묶은 블로그</footer>
+</body></html>`;
+  const out = path.join(ROOT, "blog-single.html");
+  fs.writeFileSync(out, embedImages(html));
+  console.log(`한 파일 블로그 완성 → blog-single.html (이 파일 하나만 보내도 열립니다)`);
+}
+
+const result = build();
+if (process.argv.includes("--single")) buildSingle(result);
